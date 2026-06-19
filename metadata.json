@@ -1,0 +1,6 @@
+{
+  "name": "Smart Hub",
+  "description": "An elegant, interactive All-in-One Smart Dashboard featuring premium custom visual styling, fully responsive grids, multi-language support (English and Arabic), utility widgets (Weather, Quotes, Pomodoro, To-Do, News, Currency), simple analytical charts, and a Gemini-powered smart assistant.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

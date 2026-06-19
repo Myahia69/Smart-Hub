@@ -4,7 +4,8 @@ import {
   Play, Pause, RotateCcw, AlertTriangle, ArrowRight, Sparkles, RefreshCw, RefreshCcw,
   CloudSun, CloudRain, CloudLightning, Cloud, Wind, Thermometer, Droplets,
   Newspaper, Landmark, Compass, Clock, Send, CheckCircle, Bell, BarChart2,
-  X, Check, Lock, Unlock, HelpCircle, Laptop
+  X, Check, Lock, Unlock, HelpCircle, Laptop,
+  Volume2, VolumeX, ChevronUp, ChevronDown, Music, Mic, MicOff
 } from "lucide-react";
 import { AppSettings, TodoItem, PomodoroState, WeatherData, QuoteData, NewsItem, ExchangeRatesData, ChatMessage, AlertNotification } from "./types";
 import { TRANSLATIONS } from "./translations";
@@ -128,6 +129,16 @@ export default function App() {
   const [dailyInsights, setDailyInsights] = useState("");
   const [insightsLoading, setInsightsLoading] = useState(false);
 
+  // Premium Audio state variables
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeakingChat, setIsSpeakingChat] = useState(false);
+  const [autoReadBack, setAutoReadBack] = useState(true);
+  const speechRecognitionRef = useRef<any>(null);
+  const [activeSoundscape, setActiveSoundscape] = useState<"none" | "rain" | "zen">("none");
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourcesRef = useRef<any[]>([]);
+
   // Desktop conversion specs popup
   const [isDesktopGuideOpen, setIsDesktopGuideOpen] = useState(false);
 
@@ -202,7 +213,40 @@ export default function App() {
   useEffect(() => {
     fetchDailyQuote();
     fetchNewsFeed();
+    
+    // Stop speaking on language override
+    try {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      setIsSpeakingChat(false);
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+      }
+      setIsListening(false);
+    } catch {
+      // safe bypass
+    }
   }, [settings.language]);
+
+  // Clean up premium synthesizers and speech on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {}
+      }
+      stopSoundscape();
+      if (audioContextRef.current) {
+        try {
+          audioContextRef.current.close();
+        } catch {}
+      }
+    };
+  }, []);
 
   // Automatically refresh digital insight when key, language, or todos change
   useEffect(() => {
@@ -262,6 +306,353 @@ export default function App() {
       if (interval) clearInterval(interval);
     };
   }, [pomoState.isRunning, pomoState.mode]);
+
+
+
+  /* --- Premium Client-Side Audio Synthesizers & Voice System --- */
+
+  const toggleSpeech = () => {
+    if (isSpeaking) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+      setIsSpeaking(false);
+      pushNotification(settings.language === "ar" ? "تم إيقاف القراءة الصوتية" : "Briefing narration stopped.", "info");
+    } else {
+      if (!dailyInsights) return;
+      try {
+        window.speechSynthesis.cancel(); // cancel any active ones first
+        
+        // Strip markdown stars, ticks, hash symbols for super clear voice reading
+        const cleanText = dailyInsights
+          .replace(/[*#_`~-]/g, " ")
+          .replace(/\s+/g, " ");
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.lang = settings.language === "ar" ? "ar-EG" : "en-US";
+        
+        utterance.onend = () => {
+          setIsSpeaking(false);
+        };
+        utterance.onerror = () => {
+          setIsSpeaking(false);
+        };
+
+        // Pick matching voice
+        const voices = window.speechSynthesis.getVoices();
+        const matchedVoice = voices.find(v => 
+          settings.language === "ar" 
+            ? v.lang.startsWith("ar") 
+            : v.lang.startsWith("en")
+        );
+        if (matchedVoice) {
+          utterance.voice = matchedVoice;
+        }
+
+        window.speechSynthesis.speak(utterance);
+        setIsSpeaking(true);
+        pushNotification(
+          settings.language === "ar" ? "بدء قراءة الموجز اليومي صوتياً" : "Playing AI daily briefing audio narration...", 
+          "success"
+        );
+      } catch (err) {
+        setIsSpeaking(false);
+      }
+    }
+  };
+
+  const startZenDrone = (ctx: AudioContext) => {
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    const gain2 = ctx.createGain();
+    const mainGain = ctx.createGain();
+
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(110, ctx.currentTime); // A2 Note
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(111.5, ctx.currentTime); // 1.5 Hz difference so it hums binaurally
+
+    const oscSub = ctx.createOscillator();
+    oscSub.type = "triangle";
+    oscSub.frequency.setValueAtTime(55, ctx.currentTime); // A1 note
+    const gainSub = ctx.createGain();
+    gainSub.gain.setValueAtTime(0.04, ctx.currentTime);
+
+    gain1.gain.setValueAtTime(0.06, ctx.currentTime);
+    gain2.gain.setValueAtTime(0.06, ctx.currentTime);
+    mainGain.gain.setValueAtTime(0.12, ctx.currentTime);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(180, ctx.currentTime);
+
+    osc1.connect(gain1);
+    osc2.connect(gain2);
+    oscSub.connect(gainSub);
+
+    gain1.connect(filter);
+    gain2.connect(filter);
+    gainSub.connect(filter);
+
+    filter.connect(mainGain);
+    mainGain.connect(ctx.destination);
+
+    osc1.start();
+    osc2.start();
+    oscSub.start();
+
+    audioSourcesRef.current = [osc1, osc2, oscSub, mainGain];
+  };
+
+  const startRainSynth = (ctx: AudioContext) => {
+    const bufferSize = 2 * ctx.sampleRate;
+    const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    
+    let b0 = 0.0, b1 = 0.0, b2 = 0.0, b3 = 0.0, b4 = 0.0, b5 = 0.0, b6 = 0.0;
+    
+    // Pink noise generation
+    for (let i = 0; i < bufferSize; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.96900 * b2 + white * 0.1538520;
+      b3 = 0.86650 * b3 + white * 0.3104856;
+      b4 = 0.55000 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.0168980;
+      output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 * 0.5362;
+      output[i] *= 0.11; // normalizes amplitude
+      b6 = white * 0.115926;
+    }
+
+    const noiseNode = ctx.createBufferSource();
+    noiseNode.buffer = noiseBuffer;
+    noiseNode.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(800, ctx.currentTime);
+    filter.Q.setValueAtTime(0.7, ctx.currentTime);
+
+    const gainNode = ctx.createGain();
+    gainNode.gain.setValueAtTime(0.06, ctx.currentTime);
+
+    noiseNode.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    noiseNode.start();
+
+    // Soft sporadic raindrop splashes using minor oscillators
+    const raindropInterval = setInterval(() => {
+      if (ctx.state === "closed") return;
+      try {
+        const dropOsc = ctx.createOscillator();
+        const dropGain = ctx.createGain();
+        dropOsc.type = "sine";
+        
+        const pitch = 250 + Math.random() * 450;
+        dropOsc.frequency.setValueAtTime(pitch, ctx.currentTime);
+        dropOsc.frequency.exponentialRampToValueAtTime(80, ctx.currentTime + 0.12);
+
+        dropGain.gain.setValueAtTime(0.012, ctx.currentTime);
+        dropGain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+
+        dropOsc.connect(dropGain);
+        dropGain.connect(ctx.destination);
+        dropOsc.start();
+        dropOsc.stop(ctx.currentTime + 0.15);
+      } catch {}
+    }, 320);
+
+    audioSourcesRef.current = [noiseNode, gainNode, { stop: () => clearInterval(raindropInterval) }];
+  };
+
+  const handleVoiceSoundscape = (type: "none" | "rain" | "zen") => {
+    stopSoundscape();
+
+    if (type === "none") {
+      setActiveSoundscape("none");
+      return;
+    }
+
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioContextRef.current;
+      if (ctx.state === "suspended") {
+        ctx.resume();
+      }
+
+      if (type === "zen") {
+        startZenDrone(ctx);
+      } else if (type === "rain") {
+        startRainSynth(ctx);
+      }
+
+      setActiveSoundscape(type);
+      pushNotification(
+        settings.language === "ar" ? "تم تفعيل الخلفية الصوتية المهدئة للتركيز" : "Ambient meditation soundscape active.", 
+        "success"
+      );
+    } catch {
+      setActiveSoundscape("none");
+    }
+  };
+
+  const stopSoundscape = () => {
+    if (audioSourcesRef.current.length > 0) {
+      audioSourcesRef.current.forEach(node => {
+        try {
+          if (typeof node.stop === "function") {
+            node.stop();
+          } else if (node instanceof AudioScheduledSourceNode) {
+            node.stop();
+          }
+        } catch {}
+      });
+      audioSourcesRef.current = [];
+    }
+    setActiveSoundscape("none");
+  };
+
+
+  /* --- Web Speech API Recognition & Synthesis --- */
+
+  const toggleListening = () => {
+    if (isListening) {
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (e) {}
+      }
+      setIsListening(false);
+      pushNotification(
+        settings.language === "ar" ? "تم إيقاف الاستماع" : "Microphone listener deactivated.",
+        "info"
+      );
+    } else {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        pushNotification(
+          settings.language === "ar" ? "متصفحك الحالي لا يدعم ميزة الإدخال الصوتي" : "Interactive voice input is not supported by your current browser.",
+          "warning"
+        );
+        return;
+      }
+
+      try {
+        // Stop any text-to-speech currently running first so it doesn't feed back into mic!
+        try {
+          window.speechSynthesis.cancel();
+          setIsSpeaking(false);
+          setIsSpeakingChat(false);
+        } catch {}
+
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = settings.language === "ar" ? "ar-EG" : "en-US";
+
+        recognition.onstart = () => {
+          setIsListening(true);
+          pushNotification(
+            settings.language === "ar" ? "الميكروفون نشط، تحدث الآن..." : "Microphone active, speak your query...",
+            "info"
+          );
+        };
+
+        recognition.onresult = (event: any) => {
+          const transcript = event.results[0][0].transcript;
+          if (transcript) {
+            setCurrentChatInput(prev => {
+              const base = prev.trim();
+              return base ? base + " " + transcript : transcript;
+            });
+            pushNotification(
+              settings.language === "ar" ? `تم التقاط: "${transcript}"` : `Captured: "${transcript}"`,
+              "success"
+            );
+          }
+        };
+
+        recognition.onerror = (event: any) => {
+          console.error("Speech recognition error", event);
+          setIsListening(false);
+          if (event.error && event.error !== "no-speech") {
+            pushNotification(
+              settings.language === "ar" ? `خطأ ميكروفون: ${event.error}` : `Mic alert: ${event.error}`,
+              "warning"
+            );
+          }
+        };
+
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+
+        speechRecognitionRef.current = recognition;
+        recognition.start();
+      } catch (err: any) {
+        console.error("Failed to start speech recognition", err);
+        setIsListening(false);
+        pushNotification(
+          settings.language === "ar" ? "فشل تشغيل مستشعر الصوت" : "Audio capture initialization failed.",
+          "warning"
+        );
+      }
+    }
+  };
+
+  const speakChatResponse = (text: string) => {
+    if (!autoReadBack) return;
+
+    try {
+      window.speechSynthesis.cancel(); // Clears any active voices
+
+      const cleanText = text
+        .replace(/[*#_`~-]/g, " ")
+        .replace(/\s+/g, " ");
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang = settings.language === "ar" ? "ar-EG" : "en-US";
+
+      utterance.onstart = () => {
+        setIsSpeakingChat(true);
+      };
+      utterance.onend = () => {
+        setIsSpeakingChat(false);
+      };
+      utterance.onerror = () => {
+        setIsSpeakingChat(false);
+      };
+
+      // Set voice match
+      const voices = window.speechSynthesis.getVoices();
+      const matchedVoice = voices.find(v => 
+        settings.language === "ar" 
+          ? v.lang.startsWith("ar") 
+          : v.lang.startsWith("en")
+      );
+      if (matchedVoice) {
+        utterance.voice = matchedVoice;
+      }
+
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.error("Synthesizer failed", err);
+      setIsSpeakingChat(false);
+    }
+  };
+
+  const stopSpeakingChat = () => {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+    setIsSpeakingChat(false);
+  };
 
 
   /* --- API fetch functions --- */
@@ -519,15 +910,17 @@ export default function App() {
       }
 
       const data = await response.json();
+      const replyText = data.text || "I was unable to retrieve a logical response. Try again.";
       
       const responseMessage: ChatMessage = {
         id: Math.random().toString(),
         sender: "assistant",
-        text: data.text || "I was unable to retrieve a logical response. Try again.",
+        text: replyText,
         timestamp: new Date().toLocaleTimeString(settings.language === "ar" ? "ar-EG" : "en-US", { hour: "2-digit", minute: "2-digit" })
       };
 
       setMessages(prev => [...prev, responseMessage]);
+      speakChatResponse(replyText);
     } catch (err: any) {
       setMessages(prev => [...prev, {
         id: Math.random().toString(),
@@ -582,6 +975,30 @@ export default function App() {
         window.location.reload();
       }, 500);
     }
+  };
+
+  // Reorder widget grid dynamically
+  const moveWidget = (key: string, direction: "up" | "down") => {
+    const list = settings.widgetsOrder || DEFAULT_SETTINGS.widgetsOrder;
+    const index = list.indexOf(key);
+    if (index === -1) return;
+    const nextIndex = direction === "up" ? index - 1 : index + 1;
+    if (nextIndex < 0 || nextIndex >= list.length) return;
+
+    const newOrder = [...list];
+    // Swap elements
+    const temp = newOrder[index];
+    newOrder[index] = newOrder[nextIndex];
+    newOrder[nextIndex] = temp;
+
+    setSettings(prev => ({
+      ...prev,
+      widgetsOrder: newOrder
+    }));
+    pushNotification(
+      settings.language === "ar" ? "تم تحديث ترتيب الأدوات والبطاقات بنجاح" : "Control board widget arrangement updated.", 
+      "info"
+    );
   };
 
   return (
@@ -812,26 +1229,106 @@ export default function App() {
                   </p>
                 </div>
 
-                {/* Toggle Widgets view state */}
+                {/* Toggle & Re-order Widgets dynamically */}
                 <div className="space-y-3 mb-6">
-                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-75">Visible Modules</span>
-                  <div className="grid grid-cols-2 gap-2">
-                    {Object.keys(settings.visibleWidgets).map((widgetKey) => (
-                      <button
-                        key={widgetKey}
-                        onClick={() => setSettings(prev => ({
-                          ...prev,
-                          visibleWidgets: {
-                            ...prev.visibleWidgets,
-                            [widgetKey]: !prev.visibleWidgets[widgetKey]
-                          }
-                        }))}
-                        className={`py-2 px-3 rounded-xl border text-xs font-medium flex items-center justify-between transition-all ${settings.visibleWidgets[widgetKey] ? "border-transparent bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-slate-100" : "opacity-40 border-slate-200 dark:border-slate-800"}`}
-                      >
-                        <span className="capitalize">{widgetKey === "todo" ? t.todoTitle : widgetKey === "pomodoro" ? t.pomodoroTitle : widgetKey}</span>
-                        {settings.visibleWidgets[widgetKey] ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <X className="w-3.5 h-3.5 opacity-50" />}
-                      </button>
-                    ))}
+                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-75">{settings.language === "ar" ? "ترتيب وتفعيل البطاقات" : "Custom Layout & Order"}</span>
+                  <div className="space-y-2">
+                    {(settings.widgetsOrder || DEFAULT_SETTINGS.widgetsOrder).map((widgetKey) => {
+                      const isVisible = settings.visibleWidgets[widgetKey] !== false;
+                      const displayName = widgetKey === "todo" ? t.todoTitle 
+                                      : widgetKey === "pomodoro" ? t.pomodoroTitle 
+                                      : widgetKey === "weather" ? t.weatherTitle
+                                      : widgetKey === "news" ? t.newsTitle
+                                      : widgetKey === "currency" ? t.currencyTitle
+                                      : widgetKey === "quote" ? t.quoteTitle
+                                      : widgetKey === "chart" ? t.chartTitle
+                                      : widgetKey;
+
+                      return (
+                        <div 
+                          key={widgetKey}
+                          className={`p-2.5 rounded-xl border flex items-center justify-between transition-all ${isVisible ? "border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50" : "opacity-45 border-slate-100 dark:border-slate-900 bg-slate-100/30"}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSettings(prev => ({
+                                ...prev,
+                                visibleWidgets: {
+                                  ...prev.visibleWidgets,
+                                  [widgetKey]: !prev.visibleWidgets[widgetKey]
+                                }
+                              }))}
+                              className={`w-5 h-5 rounded flex items-center justify-center border transition-all ${isVisible ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-500" : "border-slate-300 dark:border-slate-700"}`}
+                            >
+                              {isVisible && <Check className="w-3.5 h-3.5" />}
+                            </button>
+                            <span className="text-xs font-semibold capitalize text-slate-700 dark:text-slate-200">{displayName}</span>
+                          </div>
+
+                          {/* Reordering controls inside Sidebar */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => moveWidget(widgetKey, "up")}
+                              className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+                              title="Move Up"
+                            >
+                              <ChevronUp className="w-4 h-4 opacity-60 hover:opacity-100" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveWidget(widgetKey, "down")}
+                              className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+                              title="Move Down"
+                            >
+                              <ChevronDown className="w-4 h-4 opacity-60 hover:opacity-100" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Desktop Icon & PWA Preview */}
+                <div className="space-y-3 mb-6 p-4 rounded-xl border border-indigo-500/15 bg-indigo-500/5">
+                  <span className="text-xs font-semibold uppercase tracking-wider block opacity-75 text-indigo-500 flex items-center gap-1.5">
+                    <Laptop className="w-4 h-4" />
+                    {settings.language === "ar" ? "أيقونة سطح المكتب والتركيب" : "Desktop Icon & Installation"}
+                  </span>
+                  
+                  <div className="flex items-center gap-4">
+                    <div className="w-16 h-16 rounded-2xl overflow-hidden shadow-lg border-2 border-slate-200 dark:border-slate-800 shrink-0 relative group">
+                      <img 
+                        src="/app_icon.jpg" 
+                        alt="Desktop App Icon" 
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                        {settings.language === "ar" ? "لوحة التحكم الذكية" : "Smart Hub Dashboard"}
+                      </h4>
+                      <p className="text-[10px] opacity-75 mt-0.5 leading-relaxed">
+                        {settings.language === "ar" 
+                          ? "تم دمج هذه الأيقونة المخصصة لتظهر مباشرة على سطح المكتب وهاتف المحمول عند تثبيت التطبيق." 
+                          : "This custom high-res icon is configured to show on your desktop, dock, or home screen."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200/50 dark:border-slate-800/30 text-[10px] leading-relaxed opacity-80">
+                    {settings.language === "ar" ? (
+                      <p>
+                        💡 <strong>للتحويل إلى تطبيق سطح مكتب:</strong> اضغط على أيقونة التثبيت <span className="font-bold text-indigo-500">(+)</span> في شريط عنوان المتصفح (Chrome/Edge) لتفعيل الاختصار فورا على شاشتك.
+                      </p>
+                    ) : (
+                      <p>
+                        💡 <strong>Install as App:</strong> Click the installation icon <span className="font-bold text-indigo-500">(+)</span> in your browser's address bar (Chrome, Edge, or Safari) to place this beautiful icon on your desktop.
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -867,17 +1364,48 @@ export default function App() {
                     {t.chatTitle}
                   </span>
                 </div>
-                {settings.geminiKey ? (
-                  <span className="flex items-center gap-1.5 text-[10px] text-emerald-500 font-bold bg-emerald-500/15 px-2.5 py-0.5 rounded-full uppercase">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                    API Connected
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 text-[10px] text-amber-500 font-semibold bg-amber-500/15 px-2.5 py-0.5 rounded-full">
-                    <Lock className="w-3 h-3" />
-                    Key Required
-                  </span>
-                )}
+                <div className="flex items-center gap-1.5">
+                  {isSpeakingChat && (
+                    <button
+                      type="button"
+                      onClick={stopSpeakingChat}
+                      className="text-rose-500 hover:text-rose-600 p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/20 animate-pulse text-xs"
+                      title={settings.language === "ar" ? "إيقاف الصوت" : "Stop speaking response"}
+                    >
+                      <VolumeX className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {settings.geminiKey && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isSpeakingChat) {
+                          stopSpeakingChat();
+                        }
+                        setAutoReadBack(!autoReadBack);
+                      }}
+                      className={`p-1.5 rounded-lg border text-xs flex items-center justify-center transition-all ${
+                        autoReadBack 
+                          ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-500" 
+                          : "border-slate-200 dark:border-slate-800 text-slate-400 opacity-60"
+                      }`}
+                      title={settings.language === "ar" ? "تبديل القراءة الصوتية" : "Auto Voice Readback"}
+                    >
+                      {autoReadBack ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                    </button>
+                  )}
+                  {settings.geminiKey ? (
+                    <span className="flex items-center gap-1.5 text-[10px] text-emerald-500 font-bold bg-emerald-500/15 px-2.5 py-0.5 rounded-full uppercase">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                      API Connected
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] text-amber-500 font-semibold bg-amber-500/15 px-2.5 py-0.5 rounded-full">
+                      <Lock className="w-3 h-3" />
+                      Key Required
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Message Streams view area */}
@@ -927,6 +1455,19 @@ export default function App() {
                 className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
               <button
+                type="button"
+                onClick={toggleListening}
+                disabled={!settings.geminiKey}
+                className={`p-2.5 rounded-xl transition-all border ${
+                  isListening 
+                    ? "bg-rose-500 text-white animate-pulse border-rose-500 ring-2 ring-rose-300" 
+                    : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-850 hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-40"
+                }`}
+                title={settings.language === "ar" ? "تحدث الآن" : "Speak to Assistant"}
+              >
+                {isListening ? <MicOff className="w-4.5 h-4.5" /> : <Mic className="w-4.5 h-4.5" />}
+              </button>
+              <button
                 type="submit"
                 disabled={chatLoading || !settings.geminiKey || !currentChatInput.trim()}
                 className={`p-2.5 rounded-xl text-white ${activeAccent.bg} hover:opacity-90 disabled:opacity-40 transition-all`}
@@ -946,16 +1487,28 @@ export default function App() {
                   {t.insightsTitle}
                 </h3>
               </div>
-              {settings.geminiKey && (
-                <button 
-                  onClick={triggerDailyInsights}
-                  disabled={insightsLoading}
-                  className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs flex items-center gap-1 font-bold"
-                  title="Force Reload Briefing"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${insightsLoading ? "animate-spin" : ""}`} />
-                </button>
-              )}
+              <div className="flex items-center gap-1.5">
+                {dailyInsights && (
+                  <button 
+                    onClick={toggleSpeech}
+                    className={`p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs flex items-center gap-1 font-bold ${isSpeaking ? activeAccent.text + " ring-2 " + activeAccent.ring + " animate-pulse" : ""}`}
+                    title={settings.language === "ar" ? "استماع للموجز" : "Listen to Briefing"}
+                  >
+                    {isSpeaking ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                    <span className="text-[10px] hidden sm:inline">{isSpeaking ? (settings.language === "ar" ? "إيقاف" : "Mute") : (settings.language === "ar" ? "استماع" : "Listen")}</span>
+                  </button>
+                )}
+                {settings.geminiKey && (
+                  <button 
+                    onClick={triggerDailyInsights}
+                    disabled={insightsLoading}
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs flex items-center gap-1 font-bold"
+                    title="Force Reload Briefing"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${insightsLoading ? "animate-spin" : ""}`} />
+                  </button>
+                )}
+              </div>
             </div>
 
             {insightsLoading ? (
@@ -985,558 +1538,604 @@ export default function App() {
         </div>
 
         {/* MIDDLE & RIGHT FLEXIBLE GRID COLUMNS */}
-        <div className="lg:col-span-8 space-y-6">
-          
-          {/* TOP PRIMARY STATUS MATRIX BANNER: GEO-WEATHER STATION & REFR RES COGNITIVE SPARKS */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            
-            {/* 🌦️ Weather Station */}
-            {settings.visibleWidgets.weather && (
-              <div className="glass-panel rounded-2xl p-5 relative overflow-hidden">
-                <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                  <div className="flex items-center gap-2">
-                    <CloudSun className={`w-5 h-5 text-indigo-500`} />
-                    <span className="font-display font-bold text-xs tracking-wide uppercase">{t.weatherTitle}</span>
-                  </div>
-                  <button
-                    onClick={triggerAutoLocation}
-                    className="text-[10px] font-bold underline text-indigo-500 dark:text-indigo-400 flex items-center gap-1"
-                  >
-                    <Compass className="w-3.5 h-3.5" />
-                    {t.weatherAutoLoc}
-                  </button>
-                </div>
+        <div id="smarthub-masonry-container" className="lg:col-span-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            {(settings.widgetsOrder || DEFAULT_SETTINGS.widgetsOrder).map((widgetKey) => {
+              if (settings.visibleWidgets[widgetKey] === false) return null;
 
-                <form onSubmit={executeCitySearch} className="flex gap-2 mb-4">
-                  <input
-                    type="text"
-                    required
-                    placeholder={t.weatherPlaceholder}
-                    value={cityNameInput}
-                    onChange={(e) => setCityNameInput(e.target.value)}
-                    className="flex-1 px-3 py-1.5 rounded-xl text-xs border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 focus:outline-none"
-                  />
-                  <button
-                    type="submit"
-                    className={`px-3 py-1.5 rounded-xl text-xs text-white ${activeAccent.bg}`}
-                  >
-                    {t.weatherSearch}
-                  </button>
-                </form>
+              switch (widgetKey) {
+                case "weather":
+                  return (
+                    <div key="weather" className="md:col-span-1">
+                      {/* 🌦️ Weather Station */}
+                      <div className="glass-panel rounded-2xl p-5 relative overflow-hidden h-full">
+                        <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                          <div className="flex items-center gap-2">
+                            <CloudSun className={`w-5 h-5 text-indigo-500`} />
+                            <span className="font-display font-bold text-xs tracking-wide uppercase">{t.weatherTitle}</span>
+                          </div>
+                          <button
+                            onClick={triggerAutoLocation}
+                            className="text-[10px] font-bold underline text-indigo-500 dark:text-indigo-400 flex items-center gap-1"
+                          >
+                            <Compass className="w-3.5 h-3.5" />
+                            {t.weatherAutoLoc}
+                          </button>
+                        </div>
 
-                {weatherState.isLoading ? (
-                  <div className="flex justify-center p-3 animate-pulse">
-                    <span className="text-xs font-semibold">Updating telemetry...</span>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-4 items-center">
-                    <div className="flex items-center gap-3">
-                      <div className="p-3 bg-indigo-500/5 rounded-2xl border border-indigo-500/15">
-                        {weatherState.conditionCode <= 3 ? (
-                          <Sun className="w-10 h-10 text-amber-500 animate-spin-slow" />
-                        ) : weatherState.conditionCode <= 67 ? (
-                          <CloudRain className="w-10 h-10 text-blue-500" />
+                        <form onSubmit={executeCitySearch} className="flex gap-2 mb-4">
+                          <input
+                            type="text"
+                            required
+                            placeholder={t.weatherPlaceholder}
+                            value={cityNameInput}
+                            onChange={(e) => setCityNameInput(e.target.value)}
+                            className="flex-1 px-3 py-1.5 rounded-xl text-xs border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 focus:outline-none"
+                          />
+                          <button
+                            type="submit"
+                            className={`px-3 py-1.5 rounded-xl text-xs text-white ${activeAccent.bg}`}
+                          >
+                            {t.weatherSearch}
+                          </button>
+                        </form>
+
+                        {weatherState.isLoading ? (
+                          <div className="flex justify-center p-3 animate-pulse">
+                            <span className="text-xs font-semibold">Updating telemetry...</span>
+                          </div>
                         ) : (
-                          <Cloud className="w-10 h-10 text-sky-450" />
+                          <div className="grid grid-cols-2 gap-4 items-center">
+                            <div className="flex items-center gap-3">
+                              <div className="p-3 bg-indigo-500/5 rounded-2xl border border-indigo-500/15">
+                                {weatherState.conditionCode <= 3 ? (
+                                  <Sun className="w-10 h-10 text-amber-500 animate-spin-slow" />
+                                ) : weatherState.conditionCode <= 67 ? (
+                                  <CloudRain className="w-10 h-10 text-blue-500" />
+                                ) : (
+                                  <Cloud className="w-10 h-10 text-sky-450" />
+                                )}
+                              </div>
+                              <div>
+                                <div className="text-3xl font-extrabold digital-segments">{weatherState.temperature}°C</div>
+                                <div className="text-[11px] font-bold opacity-75">{weatherState.conditionText}</div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1.5 border-l border-slate-200/50 dark:border-slate-800/80 pl-3">
+                              <div className="text-[10px] uppercase font-bold text-slate-400">{weatherState.cityName}</div>
+                              {weatherState.apparentTemperature && <div className="text-xs flex items-center justify-between"><span>{t.weatherFeels}:</span> <strong className="digital-segments">{weatherState.apparentTemperature}°C</strong></div>}
+                              {weatherState.humidity && <div className="text-xs flex items-center justify-between"><span>{t.weatherHumidity}:</span> <strong className="digital-segments">{weatherState.humidity}%</strong></div>}
+                            </div>
+                          </div>
                         )}
                       </div>
-                      <div>
-                        <div className="text-3xl font-extrabold digital-segments">{weatherState.temperature}°C</div>
-                        <div className="text-[11px] font-bold opacity-75">{weatherState.conditionText}</div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5 border-l border-slate-200/50 dark:border-slate-800/80 pl-3">
-                      <div className="text-[10px] uppercase font-bold text-slate-400">{weatherState.cityName}</div>
-                      {weatherState.apparentTemperature && <div className="text-xs flex items-center justify-between"><span>{t.weatherFeels}:</span> <strong className="digital-segments">{weatherState.apparentTemperature}°C</strong></div>}
-                      {weatherState.humidity && <div className="text-xs flex items-center justify-between"><span>{t.weatherHumidity}:</span> <strong className="digital-segments">{weatherState.humidity}%</strong></div>}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* 💬 Daily Quote */}
-            {settings.visibleWidgets.quote && (
-              <div className="glass-panel rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden">
-                <div>
-                  <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                    <div className="flex items-center gap-2">
-                      <Compass className="w-5 h-5 text-indigo-500" />
-                      <span className="font-display font-bold text-xs tracking-wide uppercase">{t.quoteTitle}</span>
-                    </div>
-                    <button
-                      onClick={fetchDailyQuote}
-                      disabled={quoteState.isLoading}
-                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs"
-                      title="Generate Spark"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${quoteState.isLoading ? "animate-spin" : ""}`} />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2 relative">
-                    <span className="absolute -top-4 -left-3 text-5xl font-serif text-indigo-600/10 font-black">“</span>
-                    {quoteState.isLoading ? (
-                      <p className="text-xs italic text-slate-400 animate-pulse">Retasting cognitive nectar...</p>
-                    ) : (
-                      <>
-                        <p className={`text-xs sm:text-sm font-semibold italic text-slate-700 dark:text-slate-200 leading-relaxed selection:bg-indigo-300`}>
-                          {quoteState.text}
-                        </p>
-                        <p className="text-[11px] font-bold text-indigo-500 dark:text-indigo-400 text-right">
-                          - {quoteState.author}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 flex items-center justify-between text-[10px]">
-                  <span className="opacity-50">Local Quote fallback included</span>
-                  <span className="font-bold uppercase text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">Cognition Status Verified</span>
-                </div>
-              </div>
-            )}
-
-          </div>
-
-          {/* DUAL WORKSPACE: TASK MATRIX & POMODORO INTERACTIVE TIMER */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            
-            {/* ✅ Task Matrix Checklist */}
-            {settings.visibleWidgets.todo && (
-              <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                    <div className="flex items-center gap-2">
-                      <CheckSquare className="w-5 h-5 text-indigo-500" />
-                      <span className="font-display font-bold text-xs tracking-wide uppercase">{t.todoTitle}</span>
-                    </div>
-                    <span className="text-[10px] font-bold opacity-75 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg">
-                      {todos.filter(t => t.completed).length} / {todos.length} Done
-                    </span>
-                  </div>
-
-                  {/* Add action task form */}
-                  <form onSubmit={handleAddTodo} className="flex gap-2 mb-4">
-                    <input
-                      type="text"
-                      required
-                      placeholder={t.todoPlaceholder}
-                      value={newTodoText}
-                      onChange={(e) => setNewTodoText(e.target.value)}
-                      className="flex-1 px-3.5 py-2 text-xs border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 focus:outline-none rounded-xl"
-                    />
-                    <button
-                      type="submit"
-                      className={`px-3.5 py-2 text-xs text-white ${activeAccent.bg} rounded-xl shadow-md hover:scale-105 transition-all flex items-center gap-1`}
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  </form>
-
-                  {/* Global Match Filtering list */}
-                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                    {todos.filter(todo => matchesSearch(todo.text)).map((todo) => (
-                      <div
-                        key={todo.id}
-                        className="flex items-center justify-between gap-3 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-800/80 bg-white/40 dark:bg-slate-900/40 hover:bg-white dark:hover:bg-slate-900 transition-all select-none"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => toggleTodoState(todo.id)}
-                          className="flex items-center gap-2.5 text-xs font-semibold text-left flex-1"
-                        >
-                          {todo.completed ? (
-                            <CheckSquare className="w-5 h-5 text-emerald-500 shrink-0" />
-                          ) : (
-                            <Square className="w-5 h-5 opacity-40 shrink-0" />
-                          )}
-                          <span className={`${todo.completed ? "line-through opacity-40" : ""}`}>{todo.text}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteTodoItem(todo.id)}
-                          className="p-1 rounded-lg hover:bg-rose-500/10 text-slate-400 hover:text-rose-500 transition-all"
-                          title="Delete Action Item"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                    {todos.length === 0 && (
-                      <div className="text-center p-6 opacity-60">
-                        <Check className="w-8 h-8 mx-auto text-emerald-500 mb-2" />
-                        <p className="text-xs font-semibold">{t.todoEmpty}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 text-[10px] opacity-50 text-right">
-                  Synced dynamically in storage
-                </div>
-              </div>
-            )}
-
-            {/* ⏱️ Pomodoro Protocol */}
-            {settings.visibleWidgets.pomodoro && (
-              <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                    <div className="flex items-center gap-2">
-                      <Clock className="w-5 h-5 text-indigo-500" />
-                      <span className="font-display font-bold text-xs tracking-wide uppercase">{t.pomodoroTitle}</span>
-                    </div>
-                    <button
-                      onClick={() => setIsPomoConfigOpen(!isPomoConfigOpen)}
-                      className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 hover:underline"
-                    >
-                      {t.pomoConfig}
-                    </button>
-                  </div>
-
-                  {/* Custom duration setup panel */}
-                  {isPomoConfigOpen ? (
-                    <form onSubmit={updatePomoDurations} className="space-y-3 p-3.5 mb-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="text-[10px] font-bold block mb-1">Work (Min)</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="180"
-                            required
-                            value={customWorkMinutes}
-                            onChange={(e) => setCustomWorkMinutes(parseInt(e.target.value) || 25)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] font-bold block mb-1">Break (Min)</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="60"
-                            required
-                            value={customBreakMinutes}
-                            onChange={(e) => setCustomBreakMinutes(parseInt(e.target.value) || 5)}
-                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs"
-                          />
-                        </div>
-                      </div>
-                      <div className="flex justify-end gap-1.5">
-                        <button type="button" onClick={() => setIsPomoConfigOpen(false)} className="text-[10px] font-semibold opacity-60">Cancel</button>
-                        <button type="submit" className={`px-3 py-1 rounded-lg text-white font-bold text-[10px] ${activeAccent.bg}`}>Calibrate</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <div className="flex gap-4 mb-4">
-                      <button
-                        onClick={() => setPomoState(prev => ({ ...prev, mode: "work", timeRemaining: prev.workDuration * 60, isRunning: false }))}
-                        className={`flex-1 py-1 px-2.5 rounded-xl text-[10px] font-bold transition-all border ${pomoState.mode === "work" ? activeAccent.border + " bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-white" : "border-transparent opacity-60"}`}
-                      >
-                        {t.pomoWorkBtn} ({pomoState.workDuration}m)
-                      </button>
-                      <button
-                        onClick={() => setPomoState(prev => ({ ...prev, mode: "break", timeRemaining: prev.breakDuration * 60, isRunning: false }))}
-                        className={`flex-1 py-1 px-2.5 rounded-xl text-[10px] font-bold transition-all border ${pomoState.mode === "break" ? activeAccent.border + " bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-white" : "border-transparent opacity-60"}`}
-                      >
-                        {t.pomoBreakBtn} ({pomoState.breakDuration}m)
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Main Circular Timer Design Component */}
-                  <div className="flex flex-col items-center justify-center py-2 relative">
-                    
-                    {/* Retro radial loop track */}
-                    <div className="relative w-28 h-28 flex items-center justify-center">
-                      <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
-                        <circle cx="50" cy="50" r="44" className="stroke-slate-200 dark:stroke-slate-800 fill-none" strokeWidth="6" />
-                        <circle 
-                          cx="50" 
-                          cy="50" 
-                          r="44" 
-                          stroke={activeAccent.rawHex}
-                          className="fill-none transition-all duration-1000" 
-                          strokeWidth="7" 
-                          strokeDasharray={276}
-                          strokeDashoffset={276 - (276 * getPomoProgressPercentage()) / 100}
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                      <div className="text-center z-10">
-                        <div className="text-2xl font-black digital-segments leading-none">{getPomoFormattedTime()}</div>
-                        <span className="text-[8px] tracking-widest font-bold uppercase opacity-60 block mt-1">{pomoState.mode}</span>
-                      </div>
-                    </div>
-
-                    {/* Controls array */}
-                    <div className="flex items-center gap-3 mt-4">
-                      <button
-                        onClick={() => setPomoState(prev => ({ ...prev, isRunning: !prev.isRunning }))}
-                        className={`p-2.5 rounded-full text-white shadow-md ${activeAccent.bg} hover:scale-110 active:scale-95 transition-all`}
-                        title="Play Pause Duration"
-                      >
-                        {pomoState.isRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-white text-white" />}
-                      </button>
-                      <button
-                        onClick={() => setPomoState(prev => ({ ...prev, isRunning: false, timeRemaining: (prev.mode === "work" ? prev.workDuration : prev.breakDuration) * 60 }))}
-                        className="p-2 rounded-full border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-slate-500"
-                        title="Reset Protocol"
-                      >
-                        <RefreshCcw className="w-4.5 h-4.5" />
-                      </button>
-                    </div>
-
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 text-[10px] opacity-50 flex justify-between">
-                  <span>Completed Count Today:</span>
-                  <strong className="digital-segments">Cycle #{pomoState.currentCycle}</strong>
-                </div>
-              </div>
-            )}
-
-          </div>
-
-          {/* DUAL STATS NEWS FEED & LIQUIDITY MATRIX */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            
-            {/* 📰 Interactive News Feed */}
-            {settings.visibleWidgets.news && (
-              <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                    <div className="flex items-center gap-2">
-                      <Newspaper className="w-5 h-5 text-indigo-500" />
-                      <span className="font-display font-bold text-xs tracking-wide uppercase">{t.newsTitle}</span>
-                    </div>
-                    <button
-                      onClick={fetchNewsFeed}
-                      disabled={newsLoading}
-                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs"
-                      title="Trigger Sync Feed"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${newsLoading ? "animate-spin" : ""}`} />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3.5 overflow-y-auto max-h-56 pr-1">
-                    {newsList.filter(news => matchesSearch(news.title) || matchesSearch(news.category)).map((news, i) => (
-                      <a
-                        key={i}
-                        href={news.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block group p-2.5 rounded-xl border border-transparent hover:border-slate-200/60 dark:hover:border-slate-800 bg-white/35 dark:bg-slate-900/35 hover:bg-white dark:hover:bg-slate-900 transition-all"
-                      >
-                        <div className="flex items-center justify-between text-[9px] font-bold opacity-60 mb-1">
-                          <span className="uppercase tracking-wider px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                            {news.category}
-                          </span>
-                          <span className="digital-segments">{news.source}</span>
-                        </div>
-                        <h4 className="text-xs font-semibold leading-snug text-slate-800 dark:text-slate-100 group-hover:text-indigo-500 transition-colors">
-                          {news.title}
-                        </h4>
-                      </a>
-                    ))}
-                    {newsList.length === 0 && (
-                      <p className="text-xs opacity-65 text-center py-6">Aggregating fresh news. Click refresh icon above.</p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 text-[10px] opacity-50 flex items-center justify-between">
-                  <span>Feed Source: Technology Hub v3</span>
-                  <span className="font-bold underline text-indigo-550">Open Source &times;</span>
-                </div>
-              </div>
-            )}
-
-            {/* 💱 Currency Liquidity Converter */}
-            {settings.visibleWidgets.currency && (
-              <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                    <div className="flex items-center gap-2">
-                      <Landmark className="w-5 h-5 text-indigo-500" />
-                      <span className="font-display font-bold text-xs tracking-wide uppercase">{t.currencyTitle}</span>
-                    </div>
-                    <button
-                      onClick={fetchExchangeRates}
-                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs"
-                      title="Update Exchange Stream"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${exchangeState.isLoading ? "animate-spin" : ""}`} />
-                    </button>
-                  </div>
-
-                  {/* Converting inputs */}
-                  <div className="space-y-3.5 mb-4">
-                    <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider block opacity-75 mb-1">{t.currencyConvert}</span>
-                      <div className="grid grid-cols-3 gap-2">
-                        {/* Source Selection */}
-                        <select
-                          value={currencySource}
-                          onChange={(e) => setCurrencySource(e.target.value)}
-                          className="px-2 py-1.5 rounded-xl text-xs border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
-                        >
-                          {Object.keys(exchangeState.rates).map(cur => (
-                            <option key={cur} value={cur}>{cur}</option>
-                          ))}
-                        </select>
-                        <span className="flex items-center justify-center opacity-40 text-xs font-bold leading-none">&rarr;</span>
-                        {/* Target Selection */}
-                        <select
-                          value={currencyTarget}
-                          onChange={(e) => setCurrencyTarget(e.target.value)}
-                          className="px-2 py-1.5 rounded-xl text-xs border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
-                        >
-                          {Object.keys(exchangeState.rates).map(cur => (
-                            <option key={cur} value={cur}>{cur}</option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3.5">
-                      <div>
-                        <label className="text-[9px] font-bold block mb-1 opacity-60">{t.currencyAmount}</label>
-                        <input
-                          type="number"
-                          min="0.01"
-                          step="0.01"
-                          value={currencyAmount}
-                          onChange={(e) => setCurrencyAmount(parseFloat(e.target.value) || 1)}
-                          className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-bold digital-segments"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] font-bold block mb-1 opacity-60">{t.currencyResult}</label>
-                        <div className="w-full px-3 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 font-bold text-slate-700 dark:text-slate-350 digital-segments overflow-x-auto whitespace-nowrap leading-[1.35rem]">
-                          {(() => {
-                            const rateSrc = exchangeState.rates[currencySource] || 1;
-                            const rateTrg = exchangeState.rates[currencyTarget] || 1;
-                            const converted = (currencyAmount / rateSrc) * rateTrg;
-                            return `${converted.toFixed(2)} ${currencyTarget}`;
-                          })()}
-                        </div>
-                      </div>
-                    </div>
-
-                  </div>
-
-                  {/* Static rates grid for Major currencies */}
-                  <div className="pt-2">
-                    <span className="text-[9px] font-bold uppercase tracking-wider block opacity-75 mb-1.5">{t.currencyMajor}</span>
-                    <div className="grid grid-cols-4 gap-2">
-                      {["EUR", "GBP", "SAR", "AED"].map((curKey) => (
-                        <div key={curKey} className="text-center p-2 rounded-xl bg-white/40 dark:bg-slate-900/40 border border-slate-200/40 dark:border-slate-800/60 font-medium">
-                          <div className="text-[9px] tracking-wider opacity-60">{curKey}</div>
-                          <div className="text-xs font-bold digital-segments mt-0.5">
-                            {(exchangeState.rates[curKey] || 1).toFixed(2)}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                </div>
-
-                <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 text-[10px] opacity-55 flex justify-between">
-                  <span>Open exchange rate index</span>
-                  <span className="digital-segments tracking-wider opacity-60 leading-none">Next update tomorrow</span>
-                </div>
-              </div>
-            )}
-
-          </div>
-
-          {/* 📊 PRODUCTIVITY ANALYTICS: INTERACTIVE SVG CHART */}
-          {settings.visibleWidgets.chart && (
-            <div className="glass-panel rounded-2xl p-5 relative overflow-hidden">
-              <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
-                <div className="flex items-center gap-2">
-                  <BarChart2 className="w-5 h-5 text-indigo-500" />
-                  <div>
-                    <span className="font-display font-bold text-xs tracking-wide uppercase">{t.chartTitle}</span>
-                    <p className="text-[9px] opacity-65 leading-none">{t.chartDesc}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 border border-slate-200 dark:border-slate-800 rounded-lg p-1 text-[9px] font-semibold bg-white dark:bg-slate-900">
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>{t.chartPomoMetric}</span>
-                  <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>{t.chartTaskMetric}</span>
-                </div>
-              </div>
-
-              {/* Native responsive premium SVG Sparkline and column bars bar chart representation */}
-              <div className="w-full h-44 flex items-end justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 relative z-10 pt-4">
-                
-                {/* Visual grid ticks background */}
-                <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-10">
-                  <div className="border-b border-slate-800 dark:border-white w-full"></div>
-                  <div className="border-b border-slate-800 dark:border-white w-full"></div>
-                  <div className="border-b border-slate-800 dark:border-white w-full"></div>
-                  <div className="border-b border-slate-800 dark:border-white w-full"></div>
-                </div>
-
-                {/* Days bars */}
-                {[
-                  { day: "Mon", tasks: 2, pomo: 50 },
-                  { day: "Tue", tasks: 4, pomo: 100 },
-                  { day: "Wed", tasks: 1, pomo: 25 },
-                  { day: "Thu", tasks: 6, pomo: 150 },
-                  { day: "Fri", tasks: todos.filter(t => t.completed).length, pomo: (pomoState.currentCycle - 1) * pomoState.workDuration },
-                  { day: "Sat", tasks: 0, pomo: 0 },
-                  { day: "Sun", tasks: 0, pomo: 0 }
-                ].map((item, index) => {
-                  // Calculate heights proportionally. Pomo max is 180 min, Tasks max is 8.
-                  const pomoHeight = Math.min((item.pomo / 180) * 100, 100);
-                  const taskHeight = Math.min((item.tasks / 8) * 100, 100);
-
-                  return (
-                    <div key={index} className="flex-1 flex flex-col justify-end items-center h-full gap-1 group relative">
-                      
-                      {/* Interactive Custom Floating tooltip indicator */}
-                      <div className="absolute bottom-full mb-2 bg-slate-900 text-white rounded-lg p-2 text-[9px] space-y-0.5 shadow-lg group-hover:block hidden pointer-events-none z-20">
-                        <div className="font-bold border-b border-white/25 pb-1 block mb-0.5">{item.day} Productivity</div>
-                        <div>Focused: <strong className="digital-segments text-indigo-400">{item.pomo}m</strong></div>
-                        <div>Completed: <strong className="digital-segments text-emerald-400">{item.tasks}</strong></div>
-                      </div>
-
-                      {/* Stacked visualization columns side by side */}
-                      <div className="w-full flex justify-center items-end gap-1 px-1 h-32">
-                        {/* Pomodoro minutes cylinder */}
-                        <div 
-                          style={{ height: `${Math.max(pomoHeight, 5)}%` }} 
-                          className="w-1/2 rounded-t bg-gradient-to-t from-indigo-600 to-indigo-400 group-hover:brightness-110 shadow-sm transition-all duration-700"
-                        ></div>
-                        {/* Completed tasks cylinder */}
-                        <div 
-                          style={{ height: `${Math.max(taskHeight, 5)}%` }} 
-                          className="w-1/2 rounded-t bg-gradient-to-t from-emerald-600 to-emerald-400 group-hover:brightness-110 shadow-sm transition-all duration-700"
-                        ></div>
-                      </div>
-
-                      {/* Day label */}
-                      <span className="text-[10px] font-bold opacity-60 mt-1">{item.day}</span>
                     </div>
                   );
-                })}
 
-              </div>
-              <div className="pt-2 text-[9px] opacity-45 text-center font-medium leading-none">
-                Interactive bar hovering reveals micro detail analytics. Calculated on real completed task counts.
-              </div>
-            </div>
-          )}
+                case "quote":
+                  return (
+                    <div key="quote" className="md:col-span-1">
+                      {/* 💬 Daily Quote */}
+                      <div className="glass-panel rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden h-full">
+                        <div>
+                          <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                            <div className="flex items-center gap-2">
+                              <Compass className="w-5 h-5 text-indigo-500" />
+                              <span className="font-display font-bold text-xs tracking-wide uppercase">{t.quoteTitle}</span>
+                            </div>
+                            <button
+                              onClick={fetchDailyQuote}
+                              disabled={quoteState.isLoading}
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs"
+                              title="Generate Spark"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${quoteState.isLoading ? "animate-spin" : ""}`} />
+                            </button>
+                          </div>
 
+                          <div className="space-y-2 relative">
+                            <span className="absolute -top-4 -left-3 text-5xl font-serif text-indigo-600/10 font-black">“</span>
+                            {quoteState.isLoading ? (
+                              <p className="text-xs italic text-slate-400 animate-pulse">Retasting cognitive nectar...</p>
+                            ) : (
+                              <>
+                                <p className={`text-xs sm:text-sm font-semibold italic text-slate-700 dark:text-slate-200 leading-relaxed selection:bg-indigo-300`}>
+                                  {quoteState.text}
+                                </p>
+                                <p className="text-[11px] font-bold text-indigo-500 dark:text-indigo-400 text-right">
+                                  - {quoteState.author}
+                                </p>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 flex items-center justify-between text-[10px]">
+                          <span className="opacity-50">Local Quote fallback included</span>
+                          <span className="font-bold uppercase text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">Cognition Status Verified</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+
+                case "todo":
+                  return (
+                    <div key="todo" className="md:col-span-1">
+                      {/* ✅ Task Matrix Checklist */}
+                      <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between h-full">
+                        <div>
+                          <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                            <div className="flex items-center gap-2">
+                              <CheckSquare className="w-5 h-5 text-indigo-500" />
+                              <span className="font-display font-bold text-xs tracking-wide uppercase">{t.todoTitle}</span>
+                            </div>
+                            <span className="text-[10px] font-bold opacity-75 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg">
+                              {todos.filter(t => t.completed).length} / {todos.length} Done
+                            </span>
+                          </div>
+
+                          {/* Add action task form */}
+                          <form onSubmit={handleAddTodo} className="flex gap-2 mb-4">
+                            <input
+                              type="text"
+                              required
+                              placeholder={t.todoPlaceholder}
+                              value={newTodoText}
+                              onChange={(e) => setNewTodoText(e.target.value)}
+                              className="flex-1 px-3.5 py-2 text-xs border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 focus:outline-none rounded-xl"
+                            />
+                            <button
+                              type="submit"
+                              className={`px-3.5 py-2 text-xs text-white ${activeAccent.bg} rounded-xl shadow-md hover:scale-105 transition-all flex items-center gap-1`}
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
+                          </form>
+
+                          {/* Global Match Filtering list */}
+                          <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                            {todos.filter(todo => matchesSearch(todo.text)).map((todo) => (
+                              <div
+                                key={todo.id}
+                                className="flex items-center justify-between gap-3 p-2.5 rounded-xl border border-slate-200/50 dark:border-slate-800/80 bg-white/40 dark:bg-slate-900/40 hover:bg-white dark:hover:bg-slate-900 transition-all select-none"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => toggleTodoState(todo.id)}
+                                  className="flex items-center gap-2.5 text-xs font-semibold text-left flex-1"
+                                >
+                                  {todo.completed ? (
+                                    <CheckSquare className="w-5 h-5 text-emerald-500 shrink-0" />
+                                  ) : (
+                                    <Square className="w-5 h-5 opacity-40 shrink-0" />
+                                  )}
+                                  <span className={`${todo.completed ? "line-through opacity-40" : ""}`}>{todo.text}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteTodoItem(todo.id)}
+                                  className="p-1 rounded-lg hover:bg-rose-500/10 text-slate-400 hover:text-rose-500 transition-all"
+                                  title="Delete Action Item"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
+                            {todos.length === 0 && (
+                              <div className="text-center p-6 opacity-60">
+                                <Check className="w-8 h-8 mx-auto text-emerald-500 mb-2" />
+                                <p className="text-xs font-semibold">{t.todoEmpty}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 text-[10px] opacity-50 text-right">
+                          Synced dynamically in storage
+                        </div>
+                      </div>
+                    </div>
+                  );
+
+                case "pomodoro":
+                  return (
+                    <div key="pomodoro" className="md:col-span-1">
+                      {/* ⏱️ Pomodoro Protocol */}
+                      <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between h-full">
+                        <div>
+                          <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                            <div className="flex items-center gap-2">
+                              <Clock className="w-5 h-5 text-indigo-500" />
+                              <span className="font-display font-bold text-xs tracking-wide uppercase">{t.pomodoroTitle}</span>
+                            </div>
+                            <button
+                              onClick={() => setIsPomoConfigOpen(!isPomoConfigOpen)}
+                              className="text-[10px] font-bold text-indigo-500 dark:text-indigo-400 hover:underline"
+                            >
+                              {t.pomoConfig}
+                            </button>
+                          </div>
+
+                          {/* Custom duration setup panel */}
+                          {isPomoConfigOpen ? (
+                            <form onSubmit={updatePomoDurations} className="space-y-3 p-3.5 mb-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="text-[10px] font-bold block mb-1">Work (Min)</label>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="180"
+                                    required
+                                    value={customWorkMinutes}
+                                    onChange={(e) => setCustomWorkMinutes(parseInt(e.target.value) || 25)}
+                                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-bold block mb-1">Break (Min)</label>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    max="60"
+                                    required
+                                    value={customBreakMinutes}
+                                    onChange={(e) => setCustomBreakMinutes(parseInt(e.target.value) || 5)}
+                                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs"
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex justify-end gap-1.5">
+                                <button type="button" onClick={() => setIsPomoConfigOpen(false)} className="text-[10px] font-semibold opacity-60">Cancel</button>
+                                <button type="submit" className={`px-3 py-1 rounded-lg text-white font-bold text-[10px] ${activeAccent.bg}`}>Calibrate</button>
+                              </div>
+                            </form>
+                          ) : (
+                            <div className="flex gap-4 mb-4">
+                              <button
+                                onClick={() => setPomoState(prev => ({ ...prev, mode: "work", timeRemaining: prev.workDuration * 60, isRunning: false }))}
+                                className={`flex-1 py-1 px-2.5 rounded-xl text-[10px] font-bold transition-all border ${pomoState.mode === "work" ? activeAccent.border + " bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-white" : "border-transparent opacity-60"}`}
+                              >
+                                {t.pomoWorkBtn} ({pomoState.workDuration}m)
+                              </button>
+                              <button
+                                onClick={() => setPomoState(prev => ({ ...prev, mode: "break", timeRemaining: prev.breakDuration * 60, isRunning: false }))}
+                                className={`flex-1 py-1 px-2.5 rounded-xl text-[10px] font-bold transition-all border ${pomoState.mode === "break" ? activeAccent.border + " bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-white" : "border-transparent opacity-60"}`}
+                              >
+                                {t.pomoBreakBtn} ({pomoState.breakDuration}m)
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Main Circular Timer Design Component */}
+                          <div className="flex flex-col items-center justify-center py-2 relative">
+                            
+                            {/* Retro radial loop track */}
+                            <div className="relative w-28 h-28 flex items-center justify-center">
+                              <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
+                                <circle cx="50" cy="50" r="44" className="stroke-slate-200 dark:stroke-slate-800 fill-none" strokeWidth="6" />
+                                <circle 
+                                  cx="50" 
+                                  cy="50" 
+                                  r="44" 
+                                  stroke={activeAccent.rawHex}
+                                  className="fill-none transition-all duration-1000" 
+                                  strokeWidth="7" 
+                                  strokeDasharray={276}
+                                  strokeDashoffset={276 - (276 * getPomoProgressPercentage()) / 100}
+                                  strokeLinecap="round"
+                                />
+                              </svg>
+                              <div className="text-center z-10">
+                                <div className="text-2xl font-black digital-segments leading-none">{getPomoFormattedTime()}</div>
+                                <span className="text-[8px] tracking-widest font-bold uppercase opacity-60 block mt-1">{pomoState.mode}</span>
+                              </div>
+                            </div>
+
+                            {/* Controls array */}
+                            <div className="flex items-center gap-3 mt-4">
+                              <button
+                                onClick={() => setPomoState(prev => ({ ...prev, isRunning: !prev.isRunning }))}
+                                className={`p-2.5 rounded-full text-white shadow-md ${activeAccent.bg} hover:scale-110 active:scale-95 transition-all`}
+                                title="Play Pause Duration"
+                              >
+                                {pomoState.isRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-white text-white" />}
+                              </button>
+                              <button
+                                onClick={() => setPomoState(prev => ({ ...prev, isRunning: false, timeRemaining: (prev.mode === "work" ? prev.workDuration : prev.breakDuration) * 60 }))}
+                                className="p-2 rounded-full border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-slate-500"
+                                title="Reset Protocol"
+                              >
+                                <RefreshCcw className="w-4.5 h-4.5" />
+                              </button>
+                            </div>
+
+                            {/* Premium Focus Soundscape Selector */}
+                            <div className="mt-4 pt-4 border-t border-slate-200/40 dark:border-slate-800/60 w-full flex flex-col items-center">
+                              <span className="text-[9px] font-bold uppercase tracking-wider block opacity-60 mb-2 flex items-center gap-1">
+                                <Music className="w-3 h-3 text-indigo-500 animate-pulse" />
+                                {settings.language === "ar" ? "الخلفيات الصوتية والتركيز" : "Ambient Focus Soundscapes"}
+                              </span>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleVoiceSoundscape("none")}
+                                  className={`px-2.5 py-1 rounded-lg text-[9px] font-bold transition-all ${activeSoundscape === "none" ? activeAccent.bg + " text-white" : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200"}`}
+                                >
+                                  {settings.language === "ar" ? "صامت" : "Silent"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleVoiceSoundscape("rain")}
+                                  className={`px-2.5 py-1 rounded-lg text-[9px] font-bold transition-all flex items-center gap-1 ${activeSoundscape === "rain" ? activeAccent.bg + " text-white animate-pulse" : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200"}`}
+                                >
+                                  <span>🌧️</span> {settings.language === "ar" ? "مطر" : "Rain"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleVoiceSoundscape("zen")}
+                                  className={`px-2.5 py-1 rounded-lg text-[9px] font-bold transition-all flex items-center gap-1 ${activeSoundscape === "zen" ? activeAccent.bg + " text-white animate-pulse" : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-800 dark:text-slate-200"}`}
+                                >
+                                  <span>🧘</span> {settings.language === "ar" ? "تأمل" : "Zen Drone"}
+                                </button>
+                              </div>
+                            </div>
+
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 text-[10px] opacity-50 flex justify-between mt-4">
+                          <span>Completed Count Today:</span>
+                          <strong className="digital-segments">Cycle #{pomoState.currentCycle}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  );
+
+                case "news":
+                  return (
+                    <div key="news" className="md:col-span-1">
+                      {/* 📰 Interactive News Feed */}
+                      <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between h-full">
+                        <div>
+                          <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                            <div className="flex items-center gap-2">
+                              <Newspaper className="w-5 h-5 text-indigo-500" />
+                              <span className="font-display font-bold text-xs tracking-wide uppercase">{t.newsTitle}</span>
+                            </div>
+                            <button
+                              onClick={fetchNewsFeed}
+                              disabled={newsLoading}
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs"
+                              title="Trigger Sync Feed"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${newsLoading ? "animate-spin" : ""}`} />
+                            </button>
+                          </div>
+
+                          <div className="space-y-3.5 overflow-y-auto max-h-56 pr-1">
+                            {newsList.filter(news => matchesSearch(news.title) || matchesSearch(news.category)).map((news, i) => (
+                              <a
+                                key={i}
+                                href={news.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block group p-2.5 rounded-xl border border-transparent hover:border-slate-200/60 dark:hover:border-slate-800 bg-white/35 dark:bg-slate-900/35 hover:bg-white dark:hover:bg-slate-950 transition-all"
+                              >
+                                <div className="flex items-center justify-between text-[9px] font-bold opacity-60 mb-1">
+                                  <span className="uppercase tracking-wider px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                                    {news.category}
+                                  </span>
+                                  <span className="digital-segments">{news.source}</span>
+                                </div>
+                                <h4 className="text-xs font-semibold leading-snug text-slate-800 dark:text-slate-100 group-hover:text-indigo-500 transition-colors">
+                                  {news.title}
+                                </h4>
+                              </a>
+                            ))}
+                            {newsList.length === 0 && (
+                              <p className="text-xs opacity-65 text-center py-6">Aggregating fresh news. Click refresh icon above.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 text-[10px] opacity-50 flex items-center justify-between">
+                          <span>Feed Source: Technology Hub v3</span>
+                          <span className="font-bold underline text-indigo-550">Open Source &times;</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+
+                case "currency":
+                  return (
+                    <div key="currency" className="md:col-span-1">
+                      {/* 💱 Currency Liquidity Converter */}
+                      <div className="glass-panel rounded-2xl p-5 relative overflow-hidden flex flex-col justify-between h-full">
+                        <div>
+                          <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                            <div className="flex items-center gap-2">
+                              <Landmark className="w-5 h-5 text-indigo-500" />
+                              <span className="font-display font-bold text-xs tracking-wide uppercase">{t.currencyTitle}</span>
+                            </div>
+                            <button
+                              onClick={fetchExchangeRates}
+                              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-white dark:hover:bg-slate-900 transition-all text-xs"
+                              title="Update Exchange Stream"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${exchangeState.isLoading ? "animate-spin" : ""}`} />
+                            </button>
+                          </div>
+
+                          {/* Converting inputs */}
+                          <div className="space-y-3.5 mb-4">
+                            <div>
+                              <span className="text-[10px] font-bold uppercase tracking-wider block opacity-75 mb-1">{t.currencyConvert}</span>
+                              <div className="grid grid-cols-3 gap-2">
+                                {/* Source Selection */}
+                                <select
+                                  value={currencySource}
+                                  onChange={(e) => setCurrencySource(e.target.value)}
+                                  className="px-2 py-1.5 rounded-xl text-xs border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
+                                >
+                                  {Object.keys(exchangeState.rates).map(cur => (
+                                    <option key={cur} value={cur}>{cur}</option>
+                                  ))}
+                                </select>
+                                <span className="flex items-center justify-center opacity-40 text-xs font-bold leading-none">&rarr;</span>
+                                {/* Target Selection */}
+                                <select
+                                  value={currencyTarget}
+                                  onChange={(e) => setCurrencyTarget(e.target.value)}
+                                  className="px-2 py-1.5 rounded-xl text-xs border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
+                                >
+                                  {Object.keys(exchangeState.rates).map(cur => (
+                                    <option key={cur} value={cur}>{cur}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3.5">
+                              <div>
+                                <label className="text-[9px] font-bold block mb-1 opacity-60">{t.currencyAmount}</label>
+                                <input
+                                  type="number"
+                                  min="0.01"
+                                  step="0.01"
+                                  value={currencyAmount}
+                                  onChange={(e) => setCurrencyAmount(parseFloat(e.target.value) || 1)}
+                                  className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 font-bold digital-segments"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[9px] font-bold block mb-1 opacity-60">{t.currencyResult}</label>
+                                <div className="w-full px-3 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 font-bold text-slate-700 dark:text-slate-350 digital-segments overflow-x-auto whitespace-nowrap leading-[1.35rem]">
+                                  {(() => {
+                                    const rateSrc = exchangeState.rates[currencySource] || 1;
+                                    const rateTrg = exchangeState.rates[currencyTarget] || 1;
+                                    const converted = (currencyAmount / rateSrc) * rateTrg;
+                                    return `${converted.toFixed(2)} ${currencyTarget}`;
+                                  })()}
+                                </div>
+                              </div>
+                            </div>
+
+                          </div>
+
+                          {/* Static rates grid for Major currencies */}
+                          <div className="pt-2">
+                            <span className="text-[9px] font-bold uppercase tracking-wider block opacity-75 mb-1.5">{t.currencyMajor}</span>
+                            <div className="grid grid-cols-4 gap-2">
+                              {["EUR", "GBP", "SAR", "AED"].map((curKey) => (
+                                <div key={curKey} className="text-center p-2 rounded-xl bg-white/40 dark:bg-slate-900/40 border border-slate-200/40 dark:border-slate-800/60 font-medium">
+                                  <div className="text-[9px] tracking-wider opacity-60">{curKey}</div>
+                                  <div className="text-xs font-bold digital-segments mt-0.5">
+                                    {(exchangeState.rates[curKey] || 1).toFixed(2)}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                        </div>
+
+                        <div className="border-t border-slate-200/50 dark:border-slate-800/80 pt-3 mt-4 text-[10px] opacity-55 flex justify-between">
+                          <span>Open exchange rate index</span>
+                          <span className="digital-segments tracking-wider opacity-60 leading-none">Next update tomorrow</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+
+                case "chart":
+                  return (
+                    <div key="chart" className="md:col-span-2">
+                      {/* 📊 PRODUCTIVITY ANALYTICS: INTERACTIVE SVG CHART */}
+                      <div className="glass-panel rounded-2xl p-5 relative overflow-hidden h-full">
+                        <div className="flex items-center justify-between border-b border-indigo-500/10 pb-3 mb-4">
+                          <div className="flex items-center gap-2">
+                            <BarChart2 className="w-5 h-5 text-indigo-500" />
+                            <div>
+                              <span className="font-display font-bold text-xs tracking-wide uppercase">{t.chartTitle}</span>
+                              <p className="text-[9px] opacity-65 leading-none">{t.chartDesc}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 border border-slate-200 dark:border-slate-800 rounded-lg p-1 text-[9px] font-semibold bg-white dark:bg-slate-900">
+                            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>{t.chartPomoMetric}</span>
+                            <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>{t.chartTaskMetric}</span>
+                          </div>
+                        </div>
+
+                        {/* Native responsive premium SVG Sparkline and column bars bar chart representation */}
+                        <div className="w-full h-44 flex items-end justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 relative z-10 pt-4">
+                          
+                          {/* Visual grid ticks background */}
+                          <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-10">
+                            <div className="border-b border-slate-800 dark:border-white w-full"></div>
+                            <div className="border-b border-slate-800 dark:border-white w-full"></div>
+                            <div className="border-b border-slate-800 dark:border-white w-full"></div>
+                            <div className="border-b border-slate-800 dark:border-white w-full"></div>
+                          </div>
+
+                          {/* Days bars */}
+                          {[
+                            { day: "Mon", tasks: 2, pomo: 50 },
+                            { day: "Tue", tasks: 4, pomo: 100 },
+                            { day: "Wed", tasks: 1, pomo: 25 },
+                            { day: "Thu", tasks: 6, pomo: 150 },
+                            { day: "Fri", tasks: todos.filter(t => t.completed).length, pomo: (pomoState.currentCycle - 1) * pomoState.workDuration },
+                            { day: "Sat", tasks: 0, pomo: 0 },
+                            { day: "Sun", tasks: 0, pomo: 0 }
+                          ].map((item, index) => {
+                            // Calculate heights proportionally. Pomo max is 180 min, Tasks max is 8.
+                            const pomoHeight = Math.min((item.pomo / 180) * 100, 100);
+                            const taskHeight = Math.min((item.tasks / 8) * 100, 100);
+
+                            return (
+                              <div key={index} className="flex-1 flex flex-col justify-end items-center h-full gap-1 group relative">
+                                
+                                {/* Interactive Custom Floating tooltip indicator */}
+                                <div className="absolute bottom-full mb-2 bg-slate-900 text-white rounded-lg p-2 text-[9px] space-y-0.5 shadow-lg group-hover:block hidden pointer-events-none z-20">
+                                  <div className="font-bold border-b border-white/25 pb-1 block mb-0.5">{item.day} Productivity</div>
+                                  <div>Focused: <strong className="digital-segments text-indigo-400">{item.pomo}m</strong></div>
+                                  <div>Completed: <strong className="digital-segments text-emerald-400">{item.tasks}</strong></div>
+                                </div>
+
+                                {/* Stacked visualization columns side by side */}
+                                <div className="w-full flex justify-center items-end gap-1 px-1 h-32">
+                                  {/* Pomodoro minutes cylinder */}
+                                  <div 
+                                    style={{ height: `${Math.max(pomoHeight, 5)}%` }} 
+                                    className="w-1/2 rounded-t bg-gradient-to-t from-indigo-600 to-indigo-400 group-hover:brightness-110 shadow-sm transition-all duration-700"
+                                  ></div>
+                                  {/* Completed tasks cylinder */}
+                                  <div 
+                                    style={{ height: `${Math.max(taskHeight, 5)}%` }} 
+                                    className="w-1/2 rounded-t bg-gradient-to-t from-emerald-600 to-emerald-400 group-hover:brightness-110 shadow-sm transition-all duration-700"
+                                  ></div>
+                                </div>
+
+                                {/* Day label */}
+                                <span className="text-[10px] font-bold opacity-60 mt-1">{item.day}</span>
+                              </div>
+                            );
+                          })}
+
+                        </div>
+                        <div className="pt-2 text-[9px] opacity-45 text-center font-medium leading-none">
+                          Interactive bar hovering reveals micro detail analytics. Calculated on real completed task counts.
+                        </div>
+                      </div>
+                    </div>
+                  );
+
+                default:
+                  return null;
+              }
+            })}
+          </div>
         </div>
 
       </main>

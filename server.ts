@@ -245,6 +245,32 @@ app.post("/api/gemini/insights", async (req: Request, res: Response) => {
   }
 });
 
+// 7. Desktop Application / PWA Manifest and Beautiful Icon Enpoints
+app.get("/manifest.json", (req: Request, res: Response) => {
+  res.json({
+    name: "Smart Hub Dashboard",
+    short_name: "Smart Hub",
+    description: "An elegant, interactive All-in-One Smart Dashboard featuring premium custom visual styling and smart features.",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#0f172a",
+    theme_color: "#4f46e5",
+    orientation: "any",
+    icons: [
+      {
+        src: "/app_icon.jpg",
+        sizes: "512x512",
+        type: "image/jpeg",
+        purpose: "any maskable"
+      }
+    ]
+  });
+});
+
+app.get("/app_icon.jpg", (req: Request, res: Response) => {
+  res.sendFile(path.join(process.cwd(), "src/assets/images/app_icon_1781877109100.jpg"));
+});
+
 /* --- Vite Middleware / Static Asset Setup --- */
 
 const startApp = async () => {
